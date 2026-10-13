@@ -129,7 +129,34 @@ const sr=k=>(summary?.rows||[]).filter(x=>x.kind===k);
 const sm=(r,k)=>Number(r?.[k]||0);
 const d25sum=r=>summaryPct(sm(r,'d25_ok'),sm(r,'d25_n'));
 const summaryTable=(cols,rows)=>tabulate(cols,rows);
+let activeCharts=[];
+function clearCharts(){for(const chart of activeCharts)chart.destroy();activeCharts=[];}
+function chartPanel(id,title){return `<section class="panel chartpanel"><h2>${esc(title)}</h2><div class="chartwrap"><canvas id="${id}"></canvas></div></section>`;}
+function chartGrid(...panels){return `<div class="chartgrid">${panels.join('')}</div>`;}
+function chartDraw(id,type,labels,series,opts={}){
+ const canvas=$(id);if(!canvas||!window.Chart)return;
+ const c=new Chart(canvas,{type,data:{labels,datasets:series},options:{responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{display:series.length>1,position:'bottom'}},scales:{y:{beginAtZero:true,grid:{display:true}},x:{grid:{display:false}}},...opts}});activeCharts.push(c);
+}
+function drawSummaryCharts(){
+ if(!summary||!window.Chart)return;
+ const day=sr('day').slice().sort((a,b)=>String(a.day).localeCompare(String(b.day)));
+ const stores=sr('store').slice().sort((a,b)=>sm(b,'own_tc')-sm(a,'own_tc')).slice(0,10);
+ const slots=new Map();for(const r of sr('slot')){const a=slots.get(r.slot)||{own:0,third:0,late:0,arrive:0};a.own+=sm(r,'own_tc');a.third+=sm(r,'third_tc');a.late+=sm(r,'late_n');a.arrive+=sm(r,'arrive_n');slots.set(r.slot,a);}
+ const sl=[...slots].sort(([a],[b])=>a.localeCompare(b));
+ const dist=sr('distance');
+ if(page===0){
+ chartDraw('trendChart','line',day.map(r=>r.day),[{label:'OWN TC',data:day.map(r=>sm(r,'own_tc')),borderColor:'#b42337',backgroundColor:'#b42337',tension:.25},{label:'第三方 TC',data:day.map(r=>sm(r,'third_tc')),borderColor:'#64748b',backgroundColor:'#64748b',tension:.25}]);
+ chartDraw('storeChart','bar',stores.map(r=>r.restaurant),[{label:'晚指派%',data:stores.map(r=>sm(r,'own_tc')?sm(r,'late_n')/sm(r,'own_tc')*100:0),backgroundColor:'#b42337'},{label:'晚到店%',data:stores.map(r=>sm(r,'own_tc')?sm(r,'arrive_n')/sm(r,'own_tc')*100:0),backgroundColor:'#64748b'}],{indexAxis:'y'});
+ }
+ if(page===1)chartDraw('dispatchChart','bar',sl.map(([k])=>k),[{label:'晚指派',data:sl.map(([,v])=>v.late),backgroundColor:'#b42337'},{label:'晚到店',data:sl.map(([,v])=>v.arrive),backgroundColor:'#64748b'}]);
+ if(page===2)chartDraw('distanceChart','bar',dist.map(r=>r.band),[{label:'OWN TC',data:dist.map(r=>sm(r,'own_tc')),backgroundColor:'#b42337'}]);
+ if(page===3)chartDraw('waitChart','bar',stores.map(r=>r.restaurant),[{label:'正常到店等餐>7',data:stores.map(r=>sm(r,'wait7')),backgroundColor:'#b42337'},{label:'晚到店等餐>5',data:stores.map(r=>sm(r,'wait5')),backgroundColor:'#64748b'}],{indexAxis:'y'});
+ if(page===4){const riders=sr('rider').filter(r=>r.rider_code).sort((a,b)=>sm(b,'own_tc')-sm(a,'own_tc')).slice(0,15);chartDraw('riderChart','bar',riders.map(r=>r.rider_code),[{label:'OWN TC',data:riders.map(r=>sm(r,'own_tc')),backgroundColor:'#b42337'}]);}
+ if(page===5)chartDraw('slotChart','bar',sl.map(([k])=>k),[{label:'OWN TC',data:sl.map(([,v])=>v.own),backgroundColor:'#b42337'},{label:'第三方 TC',data:sl.map(([,v])=>v.third),backgroundColor:'#64748b'}]);
+ if(page===6){const w=Array.from({length:7},()=>({own:0,third:0}));for(const r of day){const k=new Date(r.day+'T12:00:00+08:00').getUTCDay();w[k].own+=sm(r,'own_tc');w[k].third+=sm(r,'third_tc');}chartDraw('weekdayChart','bar',['日','一','二','三','四','五','六'],[{label:'OWN TC',data:w.map(v=>v.own),backgroundColor:'#b42337'},{label:'第三方 TC',data:w.map(v=>v.third),backgroundColor:'#64748b'}]);}
+}
 function renderSummary(){
+ clearCharts();
  const adminView=page===tabs.length-1 && role==='op';$('admin').classList.toggle('hidden',!adminView);$('page').classList.toggle('hidden',adminView);if(adminView)return;
  const total=sr('total')[0]||{},n=sm(total,'own_tc'),tc=sm(total,'tc'),hrs=summary?.hours;
  let body='';
@@ -137,11 +164,30 @@ function renderSummary(){
  if(page===1){body=box('派單＆報到效率',cards([['晚指派 TC',sm(total,'late_n')],['晚指派率',summaryPct(sm(total,'late_n'),n)],['晚到店 TC',sm(total,'arrive_n')],['晚到店率',summaryPct(sm(total,'arrive_n'),n)]]))+box('日期 × 30分鐘 × 餐廳',summaryTable(['日期','時段','餐廳','OWN TC','晚指派','晚指派%','晚到店','晚到店%','D25'],sr('store_slot').map(r=>[r.day,r.slot,r.restaurant,r.own_tc,r.late_n,summaryPct(r.late_n,r.own_tc),r.arrive_n,summaryPct(r.arrive_n,r.own_tc),d25sum(r)])));}
  if(page===2){body=box('D25 診斷',cards([['OWN D25',d25sum(total)],['D25 遲到 TC',sm(total,'d25_n')-sm(total,'d25_ok')]]))+box('配送距離分析',summaryTable(['距離','OWN TC','TC占比','Sales占比','D25','平均配送時間(分)'],sr('distance').map(r=>[r.band,r.own_tc,summaryPct(r.own_tc,n),summaryPct(r.sales,total.sales),d25sum(r),sm(r,'road_n')?fmt(sm(r,'road_sum')/sm(r,'road_n')):'—'])));}
  if(page===3){body=box('餐廳效率',cards([['延遲等餐 TC',sm(total,'wait7')+sm(total,'wait5')],['延遲平均等待時間(分)',(sm(total,'wait7')+sm(total,'wait5'))?fmt(sm(total,'delayed_wait_sum')/(sm(total,'wait7')+sm(total,'wait5'))):'—']]))+box('餐廳效率明細',summaryTable(['餐廳','OWN TC','晚指派%','晚到店%','正常到店等餐>7','晚到店等餐>5','延遲等餐%','延遲平均等待(分)'],sr('store').map(r=>[r.restaurant,r.own_tc,summaryPct(r.late_n,r.own_tc),summaryPct(r.arrive_n,r.own_tc),r.wait7,r.wait5,summaryPct(sm(r,'wait7')+sm(r,'wait5'),r.own_tc),sm(r,'wait7')+sm(r,'wait5')?fmt(sm(r,'delayed_wait_sum')/(sm(r,'wait7')+sm(r,'wait5'))):'—'])));}
- if(page===4){body=box('Rider 效率｜訂單績效',summaryTable(['Rider','OWN TC','D25','晚指派 TC','晚到店 TC','延遲等餐 TC'],sr('rider').filter(r=>r.rider_code).map(r=>[r.rider_code,r.own_tc,d25sum(r),r.late_n,r.arrive_n,sm(r,'wait7')+sm(r,'wait5')])))+'<p class="note">為節省流量，此頁先顯示 Rider 訂單績效；個別 Rider TPLH、併單趟次尚未納入彙總，避免呈現錯誤數值。</p>';}
+ if(page===4){
+ const riderHours=new Map((summary?.rider_hours||[]).map(w=>[[w.center,w.rider_code].join('|'),Number(w.hours)]));
+ const groupSelected=$('group').value!=='ALL';
+ const riderRows=sr('rider').filter(r=>r.rider_code).map(r=>{
+  const hours=groupSelected?null:riderHours.get([r.center,r.rider_code].join('|'));
+  return [r.rider_code,centerName(r.center),hours==null?'—':fmt(hours,2),r.own_tc,hours>0?fmt(Number(r.own_tc)/hours,2):'—',d25sum(r),r.late_n,r.arrive_n,sm(r,'wait7')+sm(r,'wait5')];
+ });
+ body=box('Rider 效率｜TPLH 與訂單績效',summaryTable(['Rider','中心','有效工時','OWN TC','TPLH','D25','晚指派 TC','晚到店 TC','延遲等餐 TC'],riderRows))+
+ '<p class="note">TPLH＝OWN TC ÷ 有效外送工時；僅計服務員與訓練員。工時由資料庫依日期區間彙總，不下載工時明細。選擇單一 Group 時，因工時未記錄 Group，TPLH 顯示「—」，避免錯誤歸屬。</p>';
+}
  if(page===5){body=box('訂單分布｜30 分鐘',summaryTable(['日期','時段','總 TC','OWN TC','第三方 TC','晚指派%','晚到店%','OWN D25'],sr('slot').map(r=>[r.day,r.slot,r.tc,r.own_tc,r.third_tc,summaryPct(r.late_n,r.own_tc),summaryPct(r.arrive_n,r.own_tc),d25sum(r)])));}
  if(page===6){let m=new Map();for(const r of sr('day')){let wd=new Date(r.day+'T12:00:00+08:00').getUTCDay(),a=m.get(wd)||{tc:0,own_tc:0,third_tc:0,d25_n:0,d25_ok:0,late_n:0,arrive_n:0,wait7:0,wait5:0};for(const k of Object.keys(a))a[k]+=sm(r,k);m.set(wd,a);}body=box('星期分析',summaryTable(['星期','總 TC','OWN TC','3rd%','晚指派%','晚到店%','正常到店等餐>7','晚到店等餐>5','改善合計 TC','D25'],['日','一','二','三','四','五','六'].map((name,i)=>{let r=m.get(i)||{};return['星期'+name,sm(r,'tc'),sm(r,'own_tc'),summaryPct(sm(r,'third_tc'),sm(r,'tc')),summaryPct(sm(r,'late_n'),sm(r,'own_tc')),summaryPct(sm(r,'arrive_n'),sm(r,'own_tc')),sm(r,'wait7'),sm(r,'wait5'),sm(r,'wait7')+sm(r,'wait5'),d25sum(r)]})));}
  if(page===7){body=box('訂單明細｜資料庫排序後最多 100 筆',`<p class="note">點擊表頭會重新向資料庫排序並取得前 100 筆；完整明細請使用 Excel 匯出。</p>`+tabulate(['訂單','日期','中心','餐廳','類型','原 ETA','指派剩餘(分)','到店剩餘(分)','等餐(分)','配送時間(分)','距離(km)','D25'],detailRows.map(x=>[x.order_key,period(x),centerName(x.center),x.restaurant,x.delivery_type,x.original_eta,fmt(minutes(x.assigned_at,x.original_eta)),fmt(minutes(x.rider_arrived_at,x.original_eta)),fmt(wait(x)),fmt(minutes(x.departed_at,x.delivered_at)),x.distance_km,x.d25===null?'—':x.d25?'Y':'N'])));}
- $('page').innerHTML=body;
+ const panels={
+ 0:chartGrid(chartPanel('trendChart','每日 OWN／第三方 TC 趨勢'),chartPanel('storeChart','主要餐廳異常率')),
+ 1:chartPanel('dispatchChart','各時段晚指派與晚到店 TC'),
+ 2:chartPanel('distanceChart','配送距離 OWN TC'),
+ 3:chartPanel('waitChart','主要餐廳等餐異常 TC'),
+ 4:chartPanel('riderChart','Rider OWN TC 比較'),
+ 5:chartPanel('slotChart','30 分鐘 OWN／第三方訂單量'),
+ 6:chartPanel('weekdayChart','星期 OWN／第三方訂單量')
+ };
+ $('page').innerHTML=(panels[page]||'')+body;
+ drawSummaryCharts();
  if(page===7){const cols=['order_key','order_at','center','restaurant','delivery_type','original_eta','assigned_at','rider_arrived_at','departed_at','delivered_at','distance_km','d25'];$('page').querySelectorAll('table.sortable th').forEach((th,i)=>{th.dataset.dbSort=cols[i];th.title='資料庫排序後取得前100筆';});}
 }
 async function fetchDetail(){
@@ -169,8 +215,28 @@ async function load(){
   $('status').textContent=`彙總完成：${sm(sr('total')[0],'tc').toLocaleString()} 筆訂單（只傳輸彙總）`;
  }catch(e){if(generation!==loadGeneration)return;$('status').textContent='讀取失敗：'+e.message;$('page').innerHTML='<section class="panel"><h2>查詢失敗</h2><p>未顯示不完整 KPI；請檢查 SQL 函式及 Supabase 權限。</p></section>';}
 }
-async function initialize(){let {data:{session}}=await db.auth.getSession();if(!session){$('login').style.display='block';$('app').style.display='none';return;}let {data,error}=await db.from('user_centers').select('center,role');if(error||!data?.length){$('loginMsg').textContent='此帳號尚未取得 DMS 權限：'+(error?.message||'請聯絡 OP');await db.auth.signOut();return;}membership=data;role=data.some(x=>x.role==='op')?'op':'center';$('login').style.display='none';$('app').style.display='block';$('who').textContent=session.user.email+'｜'+(role==='op'?'OP':'中心');if(role==='op'&&!tabs.includes('資料管理（OP）')){tabs.push('資料管理（OP）');buildTabs();}$('center').innerHTML=(role==='op'?[['ALL','全部中心'],...Object.entries(names).map(([a,b])=>[a,b])]:membership.map(x=>[x.center,centerName(x.center)])).map(([v,t])=>`<option value="${esc(v)}">${esc(t)}</option>`).join('');$('group').innerHTML='<option value="ALL">全部 Group</option>'+ 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(g=>`<option value="${g}">${g}</option>`).join('');await load();}
-$('signin').onclick=async()=>{let {error}=await db.auth.signInWithPassword({email:$('email').value.trim(),password:$('password').value});if(error){$('loginMsg').textContent=error.message;return;}$('password').value='';await initialize();};$('logout').onclick=async()=>{clearQueryCache();await db.auth.signOut();location.reload()};$('refresh').onclick=load; $('group').onchange=load;
+async function initialize(){let {data:{session}}=await db.auth.getSession();if(!session){$('login').style.display='block';$('app').style.display='none';return;}let {data,error}=await db.from('user_centers').select('center,role');if(error||!data?.length){$('loginMsg').textContent='此帳號尚未取得 DMS 權限：'+(error?.message||'請聯絡 OP');await db.auth.signOut();return;}membership=data;role=data.some(x=>x.role==='op')?'op':'center';$('login').style.display='none';$('app').style.display='block';$('who').textContent=session.user.email+'｜'+(role==='op'?'OP':'中心');if(role==='op'&&!tabs.includes('資料管理（OP）')){tabs.push('資料管理（OP）');buildTabs();}$('center').innerHTML=(role==='op'?[['ALL','全部中心'],...Object.entries(names).map(([a,b])=>[a,b])]:membership.map(x=>[x.center,centerName(x.center)])).map(([v,t])=>`<option value="${esc(v)}">${esc(t)}</option>`).join('');$('exportExcel').classList.remove('hidden');await refreshGroups();await load();}
+$('signin').onclick=async()=>{let {error}=await db.auth.signInWithPassword({email:$('email').value.trim(),password:$('password').value});if(error){$('loginMsg').textContent=error.message;return;}$('password').value='';await initialize();};$('logout').onclick=async()=>{clearQueryCache();await db.auth.signOut();location.reload()};// Only fetch distinct Group labels for the selected center; no full order download.
+let groupGeneration=0;
+async function refreshGroups(){
+ const token=++groupGeneration,sel=$('group'),prev=sel.value;
+ sel.disabled=true;
+ try{
+  const {data,error}=await db.rpc('dms_available_groups',{p_center:$('center').value});
+  if(error)throw Error(error.message);
+  if(token!==groupGeneration)return;
+  const groups=[...new Set((data||[]).filter(g=>/^[A-Z]$/.test(g)))].sort();
+  sel.innerHTML='<option value="ALL">全部 Group</option>'+groups.map(g=>`<option value="${g}">${g}</option>`).join('');
+  sel.value=groups.includes(prev)?prev:'ALL';
+ }catch(e){if(token===groupGeneration){sel.innerHTML='<option value="ALL">全部 Group</option>';$('status').textContent='Group 清單無法讀取：請執行更新版 SQL（'+e.message+'）';}}
+ finally{if(token===groupGeneration)sel.disabled=false;}
+}
+let filterTimer;
+function scheduleLoad(){clearTimeout(filterTimer);filterTimer=setTimeout(()=>{if($('from').value&&$('to').value)load();},250);}
+$('center').onchange=async()=>{await refreshGroups();scheduleLoad();};
+$('group').onchange=scheduleLoad;
+$('from').onchange=scheduleLoad;
+$('to').onchange=scheduleLoad;
 function buildTabs(){$('tabs').innerHTML=tabs.map((x,i)=>`<button data-index="${i}" class="${i===page?'active':''}">${i+1}. ${esc(x)}</button>`).join('');}
 buildTabs();
 $('tabs').onclick=e=>{let b=e.target.closest('button[data-index]');if(!b)return;page=+b.dataset.index;for(let x of $('tabs').children)x.classList.toggle('active',x===b);if(page===7){fetchDetail().then(renderSummary).catch(e=>$('status').textContent=e.message);}else if(summary)renderSummary();else load();};
